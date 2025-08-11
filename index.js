@@ -394,13 +394,18 @@ app.get('/api/pty/:pid/stream', (req, res) => {
         res.setHeader('Access-Control-Allow-Origin', '*');
     }
     
+    // SSE 模式下的数据缓冲区，用于正确处理行分割
+    let dataBuffer = '';
+    
     // 发送历史buffer数据
     if (includeHistory && ptyInfo.buffer) {
         if (useSSE) {
             // SSE 格式：将历史数据按行分割发送
             const lines = ptyInfo.buffer.split('\n');
-            lines.forEach((line, index) => {
-                if (line || index < lines.length - 1) { // 避免发送最后的空行
+            const lastLine = lines.pop();
+            dataBuffer = lastLine;
+            lines.forEach((line) => {
+                if (line) {
                     res.write(`data: ${line.replace(/\r/g, '')}\n\n`);
                 }
             });
@@ -429,13 +434,18 @@ app.get('/api/pty/:pid/stream', (req, res) => {
     const onDataHandler = (data) => {
         try {
             if (useSSE) {
-                // SSE 格式：将数据按行分割并格式化
-                const lines = data.toString().split('\n');
-                lines.forEach((line, index) => {
-                    if (line || index < lines.length - 1) { // 避免发送最后的空行
-                        res.write(`data: ${line.replace(/\r/g, '')}\n\n`);
-                    }
-                });
+                // SSE 格式：使用缓冲区处理行分割
+                dataBuffer += data.toString();
+                if (dataBuffer.includes('\n')) {
+                    const lines = dataBuffer.split('\n');
+                    const lastLine = lines.pop();
+                    dataBuffer = lastLine;
+                    lines.forEach((line) => {
+                        if (line) {
+                            res.write(`data: ${line.replace(/\r/g, '')}\n\n`);
+                        }
+                    });
+                }
             } else {
                 // Chunked 格式：直接发送数据
                 res.write(data);
@@ -451,6 +461,10 @@ app.get('/api/pty/:pid/stream', (req, res) => {
         console.log(`Stream for PID ${pid} ended: process exited`);
         try {
             if (useSSE) {
+                // 发送剩余的缓冲区数据
+                if (dataBuffer) {
+                    res.write(`data: ${dataBuffer.replace(/\r/g, '')}\n\n`);
+                }
                 res.write(`event: close\ndata: Process finished\n\n`);
             } else {
                 res.write('\r\n[进程已结束]\r\n');
