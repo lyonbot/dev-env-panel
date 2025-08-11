@@ -1,0 +1,17 @@
+{
+  "name": "dev-env-panel",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [],
+  "author": "lyonbot",
+  "license": "MIT",
+  "description": "In dev environment, run scripts and manage them!",
+  "dependencies": {
+    "express": "^5.1.0",
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.3"
+  }
+}

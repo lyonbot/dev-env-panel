@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>测试环境 Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              "dark-bg": "#1e293b",
+              "dark-card": "#334155",
+              "dark-border": "#475569",
+              primary: "#38bdf8",
+            },
+          },
+        },
+      };
+    </script>
+    <style>
+      body {
+        font-family: "Inter", sans-serif;
+      }
+      /* 自定义滚动条样式 */
+      ::-webkit-scrollbar {
+        width: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #334155;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #64748b;
+        border-radius: 4px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #94a3b8;
+      }
+      .xterm .xterm-viewport {
+        scrollbar-color: #64748b #334155;
+        scrollbar-width: thin;
+      }
+    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  </head>
+  <body class="bg-dark-bg text-slate-200">
+    <div id="app"></div>
+
+    <!-- Preact 和 htm -->
+    <script type="module">
+      import { h, render, Component, createRef } from "https://esm.sh/preact";
+      import { useState, useEffect, useCallback } from "https://esm.sh/preact/hooks";
+      import htm from "https://esm.sh/htm";
+
+      // Xterm.js 和插件
+      import { Terminal } from "https://cdn.jsdelivr.net/npm/xterm@5.3.0/+esm";
+      import { FitAddon } from "https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/+esm";
+
+      const html = htm.bind(h);
+
+      // API 调用封装
+      const api = {
+        getScripts: () => fetch("/api/scripts").then((res) => res.json()),
+        getActivePtys: () => fetch("/api/pty").then((res) => res.json()),
+        startScript: (repoName, scriptName) =>
+          fetch(`/api/scripts/${repoName}/${scriptName}/start`, { method: "POST" }).then((res) => res.json()),
+        stopPty: (pid) => fetch(`/api/pty/${pid}/stop`, { method: "POST" }).then((res) => res.json()),
+        destroyPty: (pid) => fetch(`/api/pty/${pid}`, { method: "DELETE" }).then((res) => res.json()),
+        getPtyBuffer: (pid) => fetch(`/api/pty/${pid}/buffer`).then((res) => res.json()),
+      };
+
+      // Xterm 终端组件
+      function XtermComponent({ pid, isRunning, onExit }) {
+        const termRef = createRef();
+        const fitAddon = new FitAddon();
+
+        useEffect(() => {
+          const term = new Terminal({
+            cursorBlink: isRunning,
+            convertEol: true,
+            fontFamily: "monospace",
+            theme: {
+              background: "#334155",
+              foreground: "#e2e8f0",
+              cursor: isRunning ? "#38bdf8" : "#64748b",
+              selection: "#475569",
+            },
+          });
+          term.loadAddon(fitAddon);
+          term.open(termRef.current);
+          fitAddon.fit();
+
+          const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+          const ws = new WebSocket(`${wsProtocol}//${window.location.host}?pid=${pid}`);
+
+          ws.onopen = () => {
+            console.log(`WebSocket connected for PID ${pid}`);
+          };
+
+          ws.onmessage = (event) => {
+            term.write(event.data);
+          };
+
+          ws.onclose = () => {
+            console.log(`WebSocket disconnected for PID ${pid}`);
+            if (isRunning) {
+              term.write("\r\n\n[连接已断开]");
+              if (onExit) onExit(pid);
+            }
+          };
+
+          ws.onerror = (err) => {
+            console.error("WebSocket Error:", err);
+            if (isRunning) {
+              term.write("\r\n\n[WebSocket 连接错误]");
+            }
+          };
+
+          term.onData((data) => {
+            if (ws.readyState === WebSocket.OPEN && isRunning) {
+              ws.send(data);
+            }
+          });
+
+          const resizeObserver = new ResizeObserver(() => {
+            fitAddon.fit();
+          });
+          resizeObserver.observe(termRef.current.parentElement);
+
+          return () => {
+            resizeObserver.disconnect();
+            ws.close();
+            term.dispose();
+          };
+        }, [pid, isRunning]);
+
+        return html`<div ref=${termRef} class="w-full h-full"></div>`;
+      }
+
+      // 主应用组件
+      function App() {
+        const [scripts, setScripts] = useState([]);
+        const [activePtys, setActivePtys] = useState([]);
+        const [runningStatus, setRunningStatus] = useState({}); // { 'repo/script': 'running' | 'starting' }
+
+        const fetchAllData = useCallback(async (preserveScroll = false) => {
+          // 如果需要保持滚动位置，保存当前滚动位置
+          const scrollPosition = preserveScroll ? window.scrollY : null;
+
+          try {
+            const [scriptsData, ptysData] = await Promise.all([api.getScripts(), api.getActivePtys()]);
+            setScripts(scriptsData);
+            setActivePtys(ptysData);
+
+            const newRunningStatus = {};
+            ptysData.forEach((p) => {
+              if (p.isRunning) {
+                newRunningStatus[`${p.repoName}/${p.scriptName}`] = "running";
+              } else {
+                newRunningStatus[`${p.repoName}/${p.scriptName}`] = "completed";
+              }
+            });
+            setRunningStatus(newRunningStatus);
+
+            // 如果需要保持滚动位置，恢复滚动位置
+            if (preserveScroll && scrollPosition !== null) {
+              setTimeout(() => {
+                window.scrollTo(0, scrollPosition);
+              }, 0);
+            }
+          } catch (error) {
+            console.error("Error fetching data:", error);
+          }
+        }, []);
+
+        useEffect(() => {
+          fetchAllData();
+          const interval = setInterval(fetchAllData, 5000); // 每5秒刷新一次 pty 列表
+          return () => clearInterval(interval);
+        }, [fetchAllData]);
+
+        const handleStartScript = async (repoName, scriptName) => {
+          const scriptId = `${repoName}/${scriptName}`;
+          setRunningStatus((prev) => ({ ...prev, [scriptId]: "starting" }));
+
+          const result = await api.startScript(repoName, scriptName);
+          if (result.error) {
+            alert(`启动失败: ${result.error}`);
+            setRunningStatus((prev) => {
+              const newState = { ...prev };
+              delete newState[scriptId];
+              return newState;
+            });
+          } else {
+            await fetchAllData(true); // 启动成功后立即刷新，保持滚动位置
+            setTimeout(() => {
+              const terminalSection = document.querySelector('section[class*="lg:col-span-2"]');
+              if (terminalSection) {
+                terminalSection.scrollIntoView({ 
+                  behavior: 'smooth', 
+                  block: 'end' 
+                });
+              }
+            }, 200);
+          }
+        };
+
+        const handleStopPty = async (pid) => {
+          await api.stopPty(pid);
+          fetchAllData(true); // 停止后立即刷新，保持滚动位置
+        };
+
+        const handleDestroyPty = async (pid) => {
+          if (confirm("确定要完全销毁这个进程吗？这将删除所有历史记录。")) {
+            await api.destroyPty(pid);
+            fetchAllData(true); // 销毁后立即刷新，保持滚动位置
+          }
+        };
+
+        const handleTerminalExit = (pid) => {
+          // 当终端连接断开时，从 activePtys 中移除
+          setActivePtys((prev) => prev.filter((p) => p.pid !== pid));
+          fetchAllData(true); // 刷新以获取最新状态，保持滚动位置
+        };
+
+        return html`
+          <div class="container mx-auto p-4 md:p-8">
+            <header class="mb-8">
+              <h1 class="text-4xl font-bold text-white">测试环境 Dashboard</h1>
+              <p class="text-slate-400 mt-2">管理和监控你的开发脚本</p>
+            </header>
+
+            <main class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              <section class="lg:col-span-1">
+                <div
+                  class="bg-dark-card p-6 rounded-lg shadow-lg sticky top-4 max-h-[calc(100vh-2rem)] overflow-y-auto"
+                >
+                  <h2 class="text-2xl font-semibold text-white mb-4">可用脚本</h2>
+                  <div class="space-y-4">
+                    ${(() => {
+                      // 按仓库分组脚本
+                      const scriptsByRepo = {};
+                      scripts.forEach(({ repoName, scriptName }) => {
+                        if (!scriptsByRepo[repoName]) {
+                          scriptsByRepo[repoName] = [];
+                        }
+                        scriptsByRepo[repoName].push(scriptName);
+                      });
+
+                      return Object.entries(scriptsByRepo).map(([repoName, scriptNames]) => {
+                        // 处理仓库名称显示
+                        const displayName = repoName === '_root' ? '全局脚本' : repoName;
+                        const isRootRepo = repoName === '_root';
+                        
+                        return html`
+                          <div key=${repoName} class="bg-slate-700 p-4 rounded-md">
+                            <div class="mb-3">
+                              <h3 class="font-bold text-white text-lg">${displayName}</h3>
+                              ${isRootRepo && html`<p class="text-xs text-slate-400">直接放在 scripts 目录下</p>`}
+                            </div>
+                            <div class="grid grid-cols-1 gap-2">
+                              ${scriptNames.map((scriptName) => {
+                                const scriptId = `${repoName}/${scriptName}`;
+                                const isRunning = runningStatus[scriptId] === "running";
+                                const isStarting = runningStatus[scriptId] === "starting";
+                                const isCompleted = runningStatus[scriptId] === "completed";
+                                return html`
+                                                                     <button
+                                     key=${scriptId}
+                                     onClick=${() => {
+                                       if (isRunning) {
+                                         // 如果正在运行，滚动到最后一个对应的终端卡片
+                                         const terminalElements = document.querySelectorAll(`[data-repo="${repoName}"][data-script="${scriptName}"]`);
+                                         if (terminalElements.length > 0) {
+                                           // 获取最后一个元素（最新的终端卡片）
+                                           const lastTerminal = terminalElements[terminalElements.length - 1];
+                                           lastTerminal.scrollIntoView({ 
+                                             behavior: 'smooth', 
+                                             block: 'center' 
+                                           });
+                                         }
+                                       } else {
+                                         // 否则启动脚本
+                                         handleStartScript(repoName, scriptName);
+                                       }
+                                     }}
+                                     disabled=${isStarting}
+                                     class="w-full text-left p-3 rounded-md font-medium text-sm transition-colors flex justify-between items-center ${
+                                       // colors
+                                       isRunning
+                                         ? "bg-green-600 hover:bg-green-500 text-white cursor-pointer"
+                                         : isStarting
+                                         ? "bg-yellow-600 animate-pulse text-white cursor-not-allowed"
+                                         : isCompleted
+                                         ? "bg-gray-600 hover:bg-green-600 text-white"
+                                         : "bg-slate-600 hover:bg-slate-500 text-white"
+                                     }"
+                                   >
+                                    <div class="flex items-center">
+                                      <span class="font-mono text-xs mr-2">${scriptName}.sh</span>
+                                      ${isRootRepo && html`<span class="text-xs text-blue-400 ml-1">🌐</span>`}
+                                      ${isCompleted && html`<span class="text-xs text-green-400 ml-2">✓</span>`}
+                                    </div>
+                                    <span class="text-xs opacity-75">
+                                      ${isRunning
+                                        ? "运行中"
+                                        : isStarting
+                                        ? "启动中..."
+                                        : isCompleted
+                                        ? "再次运行 »"
+                                        : "启动 »"}
+                                    </span>
+                                  </button>
+                                `;
+                              })}
+                            </div>
+                          </div>
+                        `;
+                      });
+                    })()}
+                    ${scripts.length === 0 && html`<p class="text-slate-400">在 'scripts' 目录下没有找到任何脚本。</p>`}
+                  </div>
+                </div>
+              </section>
+
+              <section class="lg:col-span-2">
+                <h2 class="text-2xl font-semibold text-white mb-4">终端会话</h2>
+                <div class="space-y-6">
+                  ${activePtys.length > 0
+                    ? activePtys.map(
+                        (pty) => html`
+                          <div key=${pty.pid} class="bg-dark-card rounded-lg shadow-lg overflow-hidden" data-repo="${pty.repoName}" data-script="${pty.scriptName}">
+                            <div class="p-4 bg-slate-700 flex justify-between items-center border-b border-dark-border">
+                              <div>
+                                <h3 class="font-bold text-white">
+                                  ${pty.repoName === '_root' ? '全局脚本' : pty.repoName} / ${pty.scriptName}
+                                  ${pty.repoName === '_root' && html`<span class="text-blue-400 ml-1">🌐</span>`}
+                                </h3>
+                                <p class="text-xs text-slate-400">
+                                  PID: ${pty.pid} | Started: ${new Date(pty.startTime).toLocaleString()}
+                                  ${pty.isRunning
+                                    ? html`<span class="ml-2 px-2 py-1 bg-green-500 text-white text-xs rounded"
+                                        >运行中</span
+                                      >`
+                                    : html`<span class="ml-2 px-2 py-1 bg-gray-500 text-white text-xs rounded"
+                                        >已结束</span
+                                      >`}
+                                  ${pty.logFile
+                                    ? html`<span class="ml-2 px-2 py-1 bg-blue-500 text-white text-xs rounded"
+                                        >日志: ${pty.logFile}</span
+                                      >`
+                                    : ""}
+                                </p>
+                              </div>
+                              <div class="flex gap-2">
+                                ${pty.isRunning
+                                  ? html`
+                                      <button
+                                        onClick=${() => handleStopPty(pty.pid)}
+                                        class="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded-md font-semibold text-sm transition-colors"
+                                      >
+                                        终止
+                                      </button>
+                                    `
+                                  : html`
+                                      <button
+                                        onClick=${() => handleDestroyPty(pty.pid)}
+                                        class="bg-gray-600 hover:bg-gray-700 text-white px-3 py-1 rounded-md font-semibold text-sm transition-colors"
+                                      >
+                                        销毁
+                                      </button>
+                                    `}
+                              </div>
+                            </div>
+                            <div class="h-96 p-2">
+                              <${XtermComponent}
+                                pid=${pty.pid}
+                                isRunning=${pty.isRunning}
+                                onExit=${handleTerminalExit}
+                              />
+                            </div>
+                          </div>
+                        `
+                      )
+                    : html`
+                        <div class="bg-dark-card p-8 rounded-lg text-center text-slate-400">
+                          <p>当前没有终端会话。</p>
+                          <p class="mt-2 text-sm">从左侧列表启动一个脚本以在此处查看终端输出。</p>
+                        </div>
+                      `}
+                </div>
+              </section>
+            </main>
+          </div>
+        `;
+      }
+
+      render(html`<${App} />`, document.getElementById("app"));
+    </script>
+  </body>
+</html>
