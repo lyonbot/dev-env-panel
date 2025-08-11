@@ -199,16 +199,16 @@ curl -X POST "http://127.0.0.1:3000/api/scripts/project-a/build/start?arg=--env&
 流式获取进程输出内容
 
 **查询参数：**
-- `includeHistory` (boolean, 可选) - 是否包含历史buffer数据，默认为 `true`
+- `includeHistory` (boolean, 可选) - 是否包含历史buffer数据，默认为 `false`
 - `sse` (boolean, 可选) - 是否使用SSE格式，默认为 `false` (chunked格式)
 
 **使用示例：**
 ```bash
-# 获取进程实时输出（包含历史，chunked格式）
+# 获取进程实时输出（chunked格式）
 curl "http://127.0.0.1:3000/api/pty/12345/stream"
 
-# 获取进程实时输出（不含历史）
-curl "http://127.0.0.1:3000/api/pty/12345/stream?includeHistory=false"
+# 获取进程实时输出（含历史）
+curl "http://127.0.0.1:3000/api/pty/12345/stream?includeHistory=true"
 
 # 获取进程实时输出（SSE格式）
 curl "http://127.0.0.1:3000/api/pty/12345/stream?sse=true"
@@ -351,8 +351,8 @@ done
 start_response=$(curl -X POST "${BASE_URL}/api/scripts/deploy/production/start")
 pid=$(echo "$start_response" | jq -r '.pid')
 
-# 实时输出到 CI 日志，不包含历史数据
-curl "${BASE_URL}/api/pty/${pid}/stream?includeHistory=false" &
+# 实时输出到 CI 日志，包含历史数据
+curl "${BASE_URL}/api/pty/${pid}/stream?includeHistory=true" &
 STREAM_PID=$!
 
 # 等待部署完成

@@ -363,7 +363,7 @@ app.delete('/api/pty/:pid', (req, res) => {
 /**
  * API: 流式获取进程输出内容
  * @route GET /api/pty/:pid/stream
- * @param {boolean} req.query.includeHistory - 是否包含历史buffer数据，默认为true
+ * @param {boolean} req.query.includeHistory - 是否包含历史buffer数据，默认为false
  * @param {boolean} req.query.sse - 是否使用SSE格式，默认为false（chunked格式）
  * @returns {Stream} 进程输出流
  */
@@ -376,7 +376,7 @@ app.get('/api/pty/:pid/stream', (req, res) => {
     }
     
     // 解析查询参数
-    const includeHistory = req.query.includeHistory !== 'false' && req.query.includeHistory !== '0'; // 默认为true
+    const includeHistory = req.query.includeHistory === 'true' || req.query.includeHistory === '1'; // 默认为false
     const useSSE = req.query.sse === 'true'; // 默认为false，使用chunked
     
     // 设置响应头
